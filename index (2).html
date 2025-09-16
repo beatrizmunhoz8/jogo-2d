@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Runner 2D – Mini-jogo HTML5 Canvas</title>
+  <style>
+    :root { --bg:#0f172a; --fg:#e2e8f0; --accent:#22d3ee; --accent2:#a78bfa; --good:#34d399; --bad:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji';
+           background: linear-gradient(180deg, #0b1220 0%, #0f172a 100%); color: var(--fg); min-height:100dvh; display:grid; place-items:center; }
+    .wrap { width: min(900px, 96vw); }
+    header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:16px 0; }
+    h1 { font-size: clamp(20px, 4vw, 28px); margin:0; letter-spacing:.5px; }
+    .controls { font-size: 14px; opacity:.9; }
+    canvas { width:100%; height:auto; border-radius:14px; box-shadow: 0 10px 30px rgba(255, 233, 93, 0.4); background:#ffd13b; display:block; }
+    .bar { display:flex; justify-content:space-between; align-items:center; margin:8px 0 14px; font-size:14px; }
+    .btns { display:flex; gap:10px; }
+    button { background:#ffd744; color:var(--fg); border:1px solid #ffd260; padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600; }
+    button:hover { border-color:#475569; }
+    .pill { padding:6px 10px; border:1px solid #334155; border-radius:999px; }
+    footer { margin:12px 0 28px; font-size:12px; opacity:.75; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Runner 2D – Mini-jogo</h1>
+      <div class="controls">PC: ↑/W/Espaço = pular · P = pausar · R = reiniciar · Mobile: toque</div>
+    </header>
+
+    <div class="bar">
+      <div class="pill">Dificuldade: 
+        <select id="difficulty">
+          <option value="easy">Fácil</option>
+          <option value="normal" selected>Normal</option>
+          <option value="hard">Difícil</option>
+        </select>
+      </div>
+      <div class="btns">
+        <button id="btnPause">⏸️ Pausar</button>
+        <button id="btnRestart">🔄 Reiniciar</button>
+      </div>
+    </div>
+
+    <canvas id="game" width="900" height="300" aria-label="Runner 2D"></canvas>
+
+    <footer>
+      <p><strong>Objetivo:</strong> corra o máximo que puder, evitando inimigos.</p>
+    </footer>
+  </div>
+
+  <script>
+    // ===== Base =====
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    const GROUND_H = 56;
+    const GRAVITY = 0.70;
+    const JUMP_V = -14.5;
+    const COLORS = { bg:'#0b1020', ground:'#0f213a', score:'#e2e8f0' };
+
+    let state = {
+      running: true,
+      time: 0,
+      score: 0,
+      best: +localStorage.getItem('runner_best') || 0,
+      multiplier: 1,
+      combo: 0,
+      speed: 6.5,
+      spawnTimer: 0,
+      obstacles: [],   // agora são inimigos com sprite
+    };
+
+    const difficultyEl = document.getElementById('difficulty');
+    let spawnInterval = [60, 105];
+    function applyDifficulty() {
+      const d = difficultyEl.value;
+      if (d === 'easy')   { state.speed = 5;   spawnInterval = [70, 120]; }
+      if (d === 'normal') { state.speed = 6.5; spawnInterval = [60, 105]; }
+      if (d === 'hard')   { state.speed = 8;   spawnInterval = [48,  90]; }
+    }
+    applyDifficulty();
+
+    // ===== Personagem (usa imagem) =====
+    const player = {
+      x: 100,
+      y: H - GROUND_H - 64,
+      w: 64,
+      h: 64,
+      vy: 0,
+      onGround: true,
+    };
+    const playerImg = new Image();
+    playerImg.src = "dog.png"; // ⬅️ Coloque aqui o nome da sua imagem do personagem
+
+    // ===== Inimigo (usa imagem) =====
+    const enemyImg = new Image();
+    enemyImg.src = "ovo.png"; // ⬅️ Coloque aqui o nome da sua imagem do inimigo
+
+    function makeObstacle() {
+      const w = 45;                 // ajuste ao tamanho do sprite
+      const h = 64;                 // ajuste ao tamanho do sprite
+      const y = H - GROUND_H - h;   // piso
+      // 0% de chance de vir dois inimigos com um vão entre eles
+      if (Math.random() < 0.0) {
+        const gap = 28 + Math.random()*22;
+        return [
+          { x: W + 10,        y, w, h },
+          { x: W + 10 + w + gap, y, w, h }
+        ];
+      }
+      return [{ x: W + 10, y, w, h }];
+    }
+
+    // ===== Controles =====
+    function jump() {
+      if (player.onGround) {
+        player.vy = JUMP_V;
+        player.onGround = false;
+        state.combo++;
+        state.multiplier = 1 + Math.min(2, state.combo*0.05);
+      }
+    }
+    function togglePause() { state.running = !state.running; }
+    function restart() {
+      state.time = 0; state.score = 0; state.combo = 0; state.multiplier = 1;
+      state.obstacles.length = 0;
+      player.x = 100; player.y = H - GROUND_H - player.h; player.vy = 0; player.onGround = true;
+      applyDifficulty(); state.running = true;
+    }
+
+    window.addEventListener('keydown', (e)=>{
+      if (["ArrowUp","Space","KeyW"].includes(e.code)) jump();
+      if (e.code === 'KeyP') togglePause();
+      if (e.code === 'KeyR') restart();
+    });
+    canvas.addEventListener('pointerdown', jump);
+    document.getElementById('btnPause').onclick = togglePause;
+    document.getElementById('btnRestart').onclick = restart;
+    difficultyEl.onchange = applyDifficulty;
+
+    // ===== Util =====
+    function rectsCollide(a,b){
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    // ===== Update =====
+    function update() {
+      if (!state.running) return;
+      state.time++;
+
+      // dificuldade dinâmica
+      if (state.time % 600 === 0) state.speed += 0.3;
+
+      // player física
+      player.vy += GRAVITY;
+      player.y += player.vy;
+      const groundY = H - GROUND_H - player.h;
+      if (player.y >= groundY) {
+        player.y = groundY; player.vy = 0; if (!player.onGround) player.onGround = true;
+      }
+
+      // spawner de inimigos
+      if (state.spawnTimer <= 0) {
+        state.obstacles.push(makeObstacle());
+        state.spawnTimer = Math.floor(spawnInterval[0] + Math.random()*(spawnInterval[1]-spawnInterval[0]));
+      } else state.spawnTimer--;
+
+      // mover inimigos
+      for (const group of state.obstacles) for (const o of group) o.x -= state.speed;
+
+      // remover fora da tela e pontuar
+      state.obstacles = state.obstacles.filter(group=>{
+        const allOff = group.every(o=>o.x + o.w < 0);
+        if (allOff) {
+          state.score += Math.floor(5 * state.multiplier);
+          state.combo = Math.max(0, state.combo-1);
+          state.multiplier = 1 + Math.min(2, state.combo*0.05);
+        }
+        return !allOff;
+      });
+
+      // pontuação por tempo
+      state.score += 0.05 * state.multiplier;
+
+      // colisão
+      for (const group of state.obstacles) {
+        for (const o of group) {
+          if (rectsCollide(player, o)) {
+            state.running = false;
+            state.best = Math.max(state.best, Math.floor(state.score));
+            localStorage.setItem('runner_best', state.best);
+            return;
+          }
+        }
+      }
+    }
+
+    // ===== Desenho =====
+    function drawBackground() {
+      const grd = ctx.createLinearGradient(0,0,0,H);
+      grd.addColorStop(0, '#0b1020'); grd.addColorStop(1, '#0f172a');
+      ctx.fillStyle = grd; ctx.fillRect(0,0,W,H);
+
+      ctx.fillStyle = COLORS.ground;
+      ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
+    }
+
+    function drawPlayer() {
+      // se a imagem ainda não carregou, desenha um placeholder
+      if (playerImg.complete) ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+      else { ctx.fillStyle = '#22d3ee'; ctx.fillRect(player.x, player.y, player.w, player.h); }
+    }
+
+    function drawObstacles() {
+      for (const group of state.obstacles) {
+        for (const o of group) {
+          if (enemyImg.complete) ctx.drawImage(enemyImg, o.x, o.y, o.w, o.h);
+          else { ctx.fillStyle = '#a78bfa'; ctx.fillRect(o.x, o.y, o.w, o.h); }
+        }
+      }
+    }
+
+    function drawHUD() {
+      ctx.fillStyle = COLORS.score;
+      ctx.font = '16px system-ui, Segoe UI, Roboto';
+      ctx.fillText(`Pontuação: ${Math.floor(state.score)}`, 16, 26);
+      ctx.fillText(`Recorde: ${state.best}`, 16, 48);
+      ctx.fillText(`Velocidade: ${state.speed.toFixed(1)}x`, 16, 70);
+
+      if (!state.running) {
+        ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0,0,W,H);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 28px system-ui, Segoe UI, Roboto';
+        ctx.fillText('FIM DE JOGO', W/2 - 90, H/2 - 20);
+        ctx.font = '16px system-ui, Segoe UI, Roboto';
+        ctx.fillText('Pressione R para reiniciar', W/2 - 110, H/2 + 10);
+      }
+    }
+
+    function loop() {
+      update();
+      drawBackground();
+      drawObstacles();
+      drawPlayer();
+      drawHUD();
+      requestAnimationFrame(loop);
+    }
+    loop();
+  </script>
+</body>
+</html>
